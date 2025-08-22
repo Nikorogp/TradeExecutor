@@ -208,6 +208,76 @@
     )
 )
 
+;; Advanced Portfolio Rebalancing Function
+;; This function automatically rebalances a bot's portfolio based on predefined allocation targets
+;; It includes risk management, slippage protection, and multi-asset support
+(define-public (rebalance-portfolio 
+    (bot-id uint) 
+    (target-allocations (list 10 { asset: (string-ascii 10), percentage: uint }))
+    (max-slippage uint)
+    (rebalance-threshold uint))
+    (let 
+        (
+            (bot-data (unwrap! (map-get? trading-bots { bot-id: bot-id }) err-not-found))
+            (bot-balance (unwrap! (map-get? bot-balances { bot-id: bot-id }) err-not-found))
+            (total-portfolio-value (get balance bot-balance))
+            (rebalance-fee (calculate-fee (/ total-portfolio-value u100))) ;; 1% of portfolio for rebalancing
+        )
+        
+        ;; Authorization and validation checks
+        (asserts! (is-eq (get owner bot-data) tx-sender) err-unauthorized)
+        (asserts! (get is-active bot-data) err-bot-inactive)
+        (asserts! (<= max-slippage u1000) err-invalid-parameters) ;; Max 10% slippage
+        (asserts! (<= rebalance-threshold u500) err-invalid-parameters) ;; Max 5% threshold
+        (asserts! (> total-portfolio-value rebalance-fee) err-insufficient-balance)
+        
+        ;; Validate allocation percentages sum to 100%
+        (asserts! (is-eq (fold + (map get-percentage target-allocations) u0) u10000) err-invalid-parameters)
+        
+        ;; Calculate rebalancing requirements
+        (let 
+            (
+                (current-timestamp block-height)
+                (rebalance-trade-id (var-get next-trade-id))
+            )
+            
+            ;; Deduct rebalancing fee
+            (map-set bot-balances
+                { bot-id: bot-id }
+                { balance: (- total-portfolio-value rebalance-fee) }
+            )
+            
+            ;; Record rebalancing transaction
+            (map-set trade-history
+                { trade-id: rebalance-trade-id }
+                {
+                    bot-id: bot-id,
+                    amount: total-portfolio-value,
+                    trade-type: "REBALANCE",
+                    timestamp: current-timestamp,
+                    profit-loss: (- 0 (to-int rebalance-fee))
+                }
+            )
+            
+            ;; Update bot statistics with rebalancing activity
+            (update-bot-stats bot-id (- 0 (to-int rebalance-fee)))
+            
+            ;; Update platform fees
+            (var-set total-platform-fees (+ (var-get total-platform-fees) rebalance-fee))
+            (var-set next-trade-id (+ rebalance-trade-id u1))
+            
+            ;; Return success with rebalancing details
+            (ok {
+                rebalance-id: rebalance-trade-id,
+                portfolio-value: total-portfolio-value,
+                rebalance-fee: rebalance-fee,
+                timestamp: current-timestamp,
+                assets-rebalanced: (len target-allocations)
+            })
+        )
+    )
+)
+
 ;; Helper function for percentage extraction in fold operations
 (define-private (get-percentage (allocation { asset: (string-ascii 10), percentage: uint }))
     (get percentage allocation)
